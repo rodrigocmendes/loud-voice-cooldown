@@ -14,10 +14,14 @@ import sys
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
 
+from src.logger import setup_logger
 from src.main_window import MainWindow
 
 
 def main() -> None:
+    # Configura logging antes de tudo
+    setup_logger()
+
     # Habilita high DPI no Windows
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -29,7 +33,8 @@ def main() -> None:
     app.setQuitOnLastWindowClosed(False)  # Permite rodar na bandeja
 
     window = MainWindow()
-    window.show()
+    if not window.should_start_minimized():
+        window.show()
 
     sys.exit(app.exec())
 

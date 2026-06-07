@@ -1,48 +1,62 @@
 """
 AudioMonitor - Captura áudio do microfone em tempo real usando sounddevice.
 
-Emite sinais com o nível de volume RMS calculado a cada bloco de áudio.
+Calcula o volume RMS e converte para escala 0-100.
 Não grava, não transcreve e não envia nada pela rede.
 """
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 import sounddevice as sd
-from typing import Optional
+
+from .logger import get_logger
+
+# Fator de escala para converter RMS float32 em 0-100.
+# Fala normal ~0.01-0.05 RMS → 4-20 na escala.
+# Fala alta ~0.08-0.25 RMS → 32-100 na escala.
+VOLUME_SCALE = 400
 
 
 class AudioMonitor(QObject):
-    """Captura áudio do microfone e calcula RMS em tempo real."""
+    """Captura áudio do microfone e calcula volume em escala 0-100."""
 
-    # Sinal emitido com o valor RMS normalizado (0.0 a 1.0) a cada bloco
+    # Sinal emitido com o volume (0-100) a cada bloco de áudio
     volume_updated = Signal(float)
     # Sinal emitido quando ocorre erro na captura
     error_occurred = Signal(str)
 
     def __init__(
         self,
-        device: Optional[int] = None,
+        device: int | None = None,
         sample_rate: int = 16000,
         block_size: int = 1024,
-        parent: Optional[QObject] = None,
+        parent: QObject | None = None,
     ):
         super().__init__(parent)
         self._device = device
         self._sample_rate = sample_rate
         self._block_size = block_size
-        self._stream: Optional[sd.InputStream] = None
+        self._stream: sd.InputStream | None = None
         self._running = False
+        self._current_volume: float = 0.0
+        self._log = get_logger()
 
     @property
     def is_running(self) -> bool:
         return self._running
 
-    def set_device(self, device: Optional[int]) -> None:
+    @property
+    def current_volume(self) -> float:
+        """Volume atual na escala 0-100."""
+        return self._current_volume
+
+    def set_device(self, device: int | None) -> None:
         """Define o dispositivo de captura. None = padrão do sistema."""
         was_running = self._running
         if was_running:
             self.stop()
         self._device = device
+        self._log.info("Microfone selecionado: %s", device if device is not None else "padrão")
         if was_running:
             self.start()
 
@@ -68,7 +82,9 @@ class AudioMonitor(QObject):
             )
             self._stream.start()
             self._running = True
+            self._log.info("Captura de áudio iniciada (device=%s)", self._device)
         except Exception as e:
+            self._log.error("Erro ao iniciar captura: %s", e)
             self.error_occurred.emit(f"Erro ao iniciar captura: {e}")
 
     @Slot()
@@ -82,17 +98,19 @@ class AudioMonitor(QObject):
                 pass
             self._stream = None
         self._running = False
+        self._current_volume = 0.0
+        self._log.info("Captura de áudio parada")
 
-    def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
-        """Callback chamado por sounddevice a cada bloco de áudio."""
+    def _audio_callback(
+        self, indata: np.ndarray, frames: int, time_info, status
+    ) -> None:
+        """Callback por bloco de áudio: calcula RMS e converte para 0-100."""
         if status:
-            # Ignora erros de overflow silenciosamente
-            pass
-        # Calcula RMS do bloco
+            pass  # Ignora overflow silenciosamente
         rms = float(np.sqrt(np.mean(indata**2)))
-        # Normaliza para faixa 0-1 (clamp)
-        normalized = min(rms * 5.0, 1.0)  # Fator de escala para sensibilidade
-        self.volume_updated.emit(normalized)
+        volume = min(rms * VOLUME_SCALE, 100.0)
+        self._current_volume = volume
+        self.volume_updated.emit(volume)
 
     @staticmethod
     def list_devices() -> list[dict]:

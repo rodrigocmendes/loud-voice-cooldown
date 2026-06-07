@@ -1,14 +1,14 @@
 """
 SettingsManager - Gerencia configurações persistidas em JSON local.
 
-Salva/carrega preferências como limites de volume, tempos de bloqueio,
-cooldown e dispositivo de microfone selecionado.
+Salva/carrega preferências: limite de volume, intervalos de análise,
+janela de acúmulo, tempos de bloqueio/cooldown e dispositivo de microfone.
 """
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass, asdict
-from typing import Optional
 
 
 DEFAULT_SETTINGS_PATH = os.path.join(
@@ -18,26 +18,36 @@ DEFAULT_SETTINGS_PATH = os.path.join(
 
 @dataclass
 class AppSettings:
-    # Limite de volume RMS normalizado (0.0 - 1.0)
-    volume_threshold: float = 0.15
-    # Tempo mínimo acumulado acima do limite para disparar (segundos)
-    sustained_duration: float = 2.0
-    # Janela de tempo para acumular (segundos)
-    detection_window: float = 5.0
-    # Duração do bloqueio em segundos
+    # Limite de volume para alerta (escala 0-100)
+    volume_threshold: int = 40
+    # Intervalo de análise em milissegundos
+    analysis_interval_ms: int = 100
+    # Janela de acúmulo em segundos
+    accumulation_window: float = 10.0
+    # Tempo acumulado acima do limite para acionar bloqueio (segundos)
+    block_accumulation: float = 5.0
+    # Duração do lembrete visual (segundos)
+    reminder_duration: float = 1.5
+    # Cooldown entre lembretes visuais (segundos)
+    reminder_cooldown: float = 3.0
+    # Duração do bloqueio visual (segundos)
     block_duration: float = 8.0
-    # Cooldown entre bloqueios em segundos
-    cooldown_duration: float = 45.0
+    # Cooldown após bloqueio (segundos)
+    post_block_cooldown: float = 45.0
+    # Permitir lembretes durante cooldown pós-bloqueio
+    allow_reminders_during_cooldown: bool = True
     # Dispositivo de microfone (None = padrão do sistema)
-    microphone_device: Optional[int] = None
-    # Modo progressivo de alertas (1=aviso, 2=overlay, 3=tela escura)
-    progressive_alerts: bool = True
-    # Volume calibrado (nível normal da criança)
-    calibrated_volume: float = 0.05
+    microphone_device: int | None = None
     # Taxa de amostragem do áudio
     sample_rate: int = 16000
     # Tamanho do bloco de áudio em frames
     block_size: int = 1024
+    # Hash SHA-256 da senha de admin (vazio = sem proteção)
+    admin_password_hash: str = ""
+    # Iniciar minimizado na tray (discreto)
+    start_minimized: bool = True
+    # Iniciar monitoramento automaticamente
+    auto_start_monitoring: bool = True
 
 
 class SettingsManager:
@@ -66,7 +76,6 @@ class SettingsManager:
                 if hasattr(self.settings, key):
                     setattr(self.settings, key, value)
         except (json.JSONDecodeError, IOError):
-            # Se arquivo corrompido, usa padrão
             self.save()
 
     def save(self) -> None:
@@ -77,5 +86,34 @@ class SettingsManager:
 
     def reset_defaults(self) -> None:
         """Restaura configurações padrão."""
+        pw_hash = self.settings.admin_password_hash
         self.settings = AppSettings()
+        self.settings.admin_password_hash = pw_hash
+        self.save()
+
+    # --- Senha de admin ---
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Gera hash SHA-256 da senha."""
+        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def has_password(self) -> bool:
+        """Verifica se uma senha de admin foi definida."""
+        return bool(self.settings.admin_password_hash)
+
+    def verify_password(self, password: str) -> bool:
+        """Verifica se a senha informada está correta."""
+        if not self.has_password():
+            return True
+        return self.hash_password(password) == self.settings.admin_password_hash
+
+    def set_password(self, new_password: str) -> None:
+        """Define nova senha de admin."""
+        self.settings.admin_password_hash = self.hash_password(new_password)
+        self.save()
+
+    def remove_password(self) -> None:
+        """Remove a senha de admin."""
+        self.settings.admin_password_hash = ""
         self.save()
