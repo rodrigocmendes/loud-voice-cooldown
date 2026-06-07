@@ -5,6 +5,7 @@ Salva/carrega preferências: limite de volume, intervalos de análise,
 janela de acúmulo, tempos de bloqueio/cooldown e dispositivo de microfone.
 """
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass, asdict
@@ -41,6 +42,12 @@ class AppSettings:
     sample_rate: int = 16000
     # Tamanho do bloco de áudio em frames
     block_size: int = 1024
+    # Hash SHA-256 da senha de admin (vazio = sem proteção)
+    admin_password_hash: str = ""
+    # Iniciar minimizado na tray (discreto)
+    start_minimized: bool = True
+    # Iniciar monitoramento automaticamente
+    auto_start_monitoring: bool = True
 
 
 class SettingsManager:
@@ -79,5 +86,34 @@ class SettingsManager:
 
     def reset_defaults(self) -> None:
         """Restaura configurações padrão."""
+        pw_hash = self.settings.admin_password_hash
         self.settings = AppSettings()
+        self.settings.admin_password_hash = pw_hash
+        self.save()
+
+    # --- Senha de admin ---
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Gera hash SHA-256 da senha."""
+        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def has_password(self) -> bool:
+        """Verifica se uma senha de admin foi definida."""
+        return bool(self.settings.admin_password_hash)
+
+    def verify_password(self, password: str) -> bool:
+        """Verifica se a senha informada está correta."""
+        if not self.has_password():
+            return True
+        return self.hash_password(password) == self.settings.admin_password_hash
+
+    def set_password(self, new_password: str) -> None:
+        """Define nova senha de admin."""
+        self.settings.admin_password_hash = self.hash_password(new_password)
+        self.save()
+
+    def remove_password(self) -> None:
+        """Remove a senha de admin."""
+        self.settings.admin_password_hash = ""
         self.save()

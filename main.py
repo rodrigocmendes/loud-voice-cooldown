@@ -33,7 +33,8 @@ def main() -> None:
     app.setQuitOnLastWindowClosed(False)  # Permite rodar na bandeja
 
     window = MainWindow()
-    window.show()
+    if not window.should_start_minimized():
+        window.show()
 
     sys.exit(app.exec())
 

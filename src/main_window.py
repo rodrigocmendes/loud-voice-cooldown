@@ -2,7 +2,7 @@
 MainWindow - Interface principal do aplicativo.
 
 Inclui: medidor de volume, painel de debug, controles de configuração,
-botões de teste, seleção de microfone e bandeja do sistema.
+botões de teste, seleção de microfone, bandeja do sistema e proteção por senha.
 """
 
 from enum import Enum
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QSlider, QComboBox, QGroupBox,
     QProgressBar, QSpinBox, QDoubleSpinBox, QCheckBox,
     QSystemTrayIcon, QMenu, QApplication, QScrollArea,
+    QInputDialog, QLineEdit, QMessageBox,
 )
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QCloseEvent
@@ -41,9 +42,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Loud Voice Cooldown")
-        self.setMinimumSize(560, 780)
+        self.setMinimumSize(560, 820)
         self._log = get_logger()
         self._log.info("Aplicação iniciada")
+
+        # Controle de autenticação admin
+        self._admin_authenticated = False
 
         # Gerenciadores
         self._settings_mgr = SettingsManager()
@@ -87,7 +91,12 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._setup_tray()
         self._load_settings_to_ui()
+        self._update_settings_lock()
         self._ui_timer.start()
+
+        # Auto-start monitoramento
+        if self._s.auto_start_monitoring:
+            QTimer.singleShot(500, self._auto_start)
 
     # ------------------------------------------------------------------ #
     #  Sinais
@@ -97,20 +106,14 @@ class MainWindow(QMainWindow):
         self._audio.volume_updated.connect(self._on_volume_updated)
         self._audio.error_occurred.connect(self._on_audio_error)
 
-        # Pico detectado -> pede lembrete
         self._detector.peak_detected.connect(self._on_peak_detected)
-        # Bloqueio por acúmulo
         self._detector.block_triggered.connect(self._on_block_triggered)
 
-        # Alert manager
         self._alert.show_reminder.connect(self._show_reminder)
         self._alert.show_block.connect(self._show_block)
         self._alert.block_finished.connect(self._on_block_finished)
 
-        # Overlay fecha
         self._overlay.overlay_closed.connect(self._on_overlay_closed)
-
-        # Reminder fecha
         self._reminder.reminder_closed.connect(self._on_reminder_closed)
 
     # ------------------------------------------------------------------ #
@@ -141,7 +144,6 @@ class MainWindow(QMainWindow):
         self._volume_bar.setMinimumHeight(28)
         vol_layout.addWidget(self._volume_bar)
 
-        # Acumulação
         self._acc_bar = QProgressBar()
         self._acc_bar.setRange(0, 100)
         self._acc_bar.setFormat("Acumulado: %v%")
@@ -168,7 +170,6 @@ class MainWindow(QMainWindow):
         row1.addWidget(self._pause_btn)
         ctrl_layout.addLayout(row1)
 
-        # Botões de teste
         row2 = QHBoxLayout()
         btn_reminder = QPushButton("Testar lembrete")
         btn_reminder.clicked.connect(self._test_reminder)
@@ -191,9 +192,27 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(ctrl_group)
 
-        # === Configurações ===
+        # === Configurações (protegidas por senha) ===
         cfg_group = QGroupBox("Configurações")
         cfg_layout = QVBoxLayout(cfg_group)
+
+        # Botão desbloquear/bloquear configurações
+        pw_row = QHBoxLayout()
+        self._lock_btn = QPushButton("🔓 Desbloquear configurações")
+        self._lock_btn.setMinimumHeight(32)
+        self._lock_btn.clicked.connect(self._toggle_settings_lock)
+        pw_row.addWidget(self._lock_btn)
+
+        self._change_pw_btn = QPushButton("Alterar senha")
+        self._change_pw_btn.clicked.connect(self._change_password)
+        self._change_pw_btn.setVisible(False)
+        pw_row.addWidget(self._change_pw_btn)
+        cfg_layout.addLayout(pw_row)
+
+        # Container dos controles de configuração (bloqueável)
+        self._settings_container = QWidget()
+        settings_inner = QVBoxLayout(self._settings_container)
+        settings_inner.setContentsMargins(0, 0, 0, 0)
 
         # Microfone
         mic_row = QHBoxLayout()
@@ -205,7 +224,7 @@ class MainWindow(QMainWindow):
         btn_refresh.setMaximumWidth(30)
         btn_refresh.clicked.connect(self._refresh_devices)
         mic_row.addWidget(btn_refresh)
-        cfg_layout.addLayout(mic_row)
+        settings_inner.addLayout(mic_row)
 
         # Limite de volume para alerta
         thresh_row = QHBoxLayout()
@@ -217,51 +236,53 @@ class MainWindow(QMainWindow):
         self._threshold_label = QLabel("40")
         self._threshold_label.setMinimumWidth(30)
         thresh_row.addWidget(self._threshold_label)
-        cfg_layout.addLayout(thresh_row)
+        settings_inner.addLayout(thresh_row)
 
-        # Intervalo de análise
-        self._add_spin_row(cfg_layout, "Intervalo de análise (ms):",
+        self._add_spin_row(settings_inner, "Intervalo de análise (ms):",
                            50, 1000, self._s.analysis_interval_ms,
                            self._on_analysis_interval_changed, is_int=True,
                            attr="_analysis_spin")
 
-        # Janela de acúmulo
-        self._add_dspin_row(cfg_layout, "Janela de acúmulo (s):",
+        self._add_dspin_row(settings_inner, "Janela de acúmulo (s):",
                             5.0, 300.0, self._s.accumulation_window, 5.0,
                             self._on_acc_window_changed, attr="_acc_window_spin")
 
-        # Tempo acumulado para bloqueio
-        self._add_dspin_row(cfg_layout, "Tempo acumulado para bloqueio (s):",
+        self._add_dspin_row(settings_inner, "Tempo acumulado para bloqueio (s):",
                             1.0, 60.0, self._s.block_accumulation, 0.5,
                             self._on_block_acc_changed, attr="_block_acc_spin")
 
-        # Duração do lembrete visual
-        self._add_dspin_row(cfg_layout, "Duração do lembrete (s):",
+        self._add_dspin_row(settings_inner, "Duração do lembrete (s):",
                             0.5, 10.0, self._s.reminder_duration, 0.5,
                             self._on_reminder_duration_changed, attr="_reminder_dur_spin")
 
-        # Cooldown entre lembretes
-        self._add_dspin_row(cfg_layout, "Cooldown entre lembretes (s):",
+        self._add_dspin_row(settings_inner, "Cooldown entre lembretes (s):",
                             0.5, 30.0, self._s.reminder_cooldown, 0.5,
                             self._on_reminder_cd_changed, attr="_reminder_cd_spin")
 
-        # Duração do bloqueio
-        self._add_spin_row(cfg_layout, "Duração do bloqueio (s):",
+        self._add_spin_row(settings_inner, "Duração do bloqueio (s):",
                            1, 60, int(self._s.block_duration),
                            self._on_block_duration_changed, is_int=True,
                            attr="_block_dur_spin")
 
-        # Cooldown após bloqueio
-        self._add_spin_row(cfg_layout, "Cooldown após bloqueio (s):",
+        self._add_spin_row(settings_inner, "Cooldown após bloqueio (s):",
                            5, 300, int(self._s.post_block_cooldown),
                            self._on_post_block_cd_changed, is_int=True,
                            attr="_post_block_cd_spin")
 
-        # Checkbox: lembretes durante cooldown
         self._remind_in_cd_check = QCheckBox("Permitir lembretes durante cooldown")
         self._remind_in_cd_check.stateChanged.connect(self._on_remind_in_cd_changed)
-        cfg_layout.addWidget(self._remind_in_cd_check)
+        settings_inner.addWidget(self._remind_in_cd_check)
 
+        # Opções de comportamento
+        self._start_min_check = QCheckBox("Iniciar minimizado na tray")
+        self._start_min_check.stateChanged.connect(self._on_start_min_changed)
+        settings_inner.addWidget(self._start_min_check)
+
+        self._auto_start_check = QCheckBox("Iniciar monitoramento automaticamente")
+        self._auto_start_check.stateChanged.connect(self._on_auto_start_changed)
+        settings_inner.addWidget(self._auto_start_check)
+
+        cfg_layout.addWidget(self._settings_container)
         layout.addWidget(cfg_group)
 
         # === Painel de Debug ===
@@ -294,7 +315,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(debug_group)
 
-        # Popula devices
         self._refresh_devices()
 
     # --- helpers para criar rows ---
@@ -326,6 +346,10 @@ class MainWindow(QMainWindow):
         if attr:
             setattr(self, attr, spin)
 
+    # ------------------------------------------------------------------ #
+    #  Tray (discreto)
+    # ------------------------------------------------------------------ #
+
     def _setup_tray(self) -> None:
         self._tray = QSystemTrayIcon(self)
         icon = self.style().standardIcon(self.style().StandardPixmap.SP_MediaVolumeMuted)
@@ -334,10 +358,10 @@ class MainWindow(QMainWindow):
 
         menu = QMenu()
         show_act = QAction("Mostrar", self)
-        show_act.triggered.connect(self.show)
+        show_act.triggered.connect(self._tray_show_window)
         menu.addAction(show_act)
         quit_act = QAction("Sair", self)
-        quit_act.triggered.connect(QApplication.quit)
+        quit_act.triggered.connect(self._tray_quit)
         menu.addAction(quit_act)
 
         self._tray.setContextMenu(menu)
@@ -348,6 +372,8 @@ class MainWindow(QMainWindow):
         s = self._s
         self._threshold_slider.setValue(s.volume_threshold)
         self._remind_in_cd_check.setChecked(s.allow_reminders_during_cooldown)
+        self._start_min_check.setChecked(s.start_minimized)
+        self._auto_start_check.setChecked(s.auto_start_monitoring)
 
     def _refresh_devices(self) -> None:
         self._mic_combo.blockSignals(True)
@@ -359,6 +385,100 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._mic_combo.blockSignals(False)
+
+    # ------------------------------------------------------------------ #
+    #  Proteção por senha
+    # ------------------------------------------------------------------ #
+
+    def _require_password(self) -> bool:
+        """Solicita senha se necessário. Retorna True se autenticado."""
+        if self._admin_authenticated:
+            return True
+        if not self._settings_mgr.has_password():
+            return True
+
+        password, ok = QInputDialog.getText(
+            self, "Senha de Admin",
+            "Digite a senha de administrador:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return False
+        if self._settings_mgr.verify_password(password):
+            self._admin_authenticated = True
+            self._log.info("Admin autenticado")
+            return True
+        QMessageBox.warning(self, "Erro", "Senha incorreta.")
+        return False
+
+    def _toggle_settings_lock(self) -> None:
+        """Alterna entre bloqueado/desbloqueado."""
+        if self._settings_container.isEnabled():
+            # Bloquear
+            self._admin_authenticated = False
+            self._update_settings_lock()
+        else:
+            # Desbloquear
+            if self._require_password():
+                self._update_settings_lock()
+
+    def _update_settings_lock(self) -> None:
+        """Atualiza estado visual do lock."""
+        has_pw = self._settings_mgr.has_password()
+        if has_pw and not self._admin_authenticated:
+            self._settings_container.setEnabled(False)
+            self._lock_btn.setText("🔓 Desbloquear configurações")
+            self._change_pw_btn.setVisible(False)
+        else:
+            self._settings_container.setEnabled(True)
+            self._lock_btn.setText("🔒 Bloquear configurações")
+            self._change_pw_btn.setVisible(True)
+
+    def _change_password(self) -> None:
+        """Permite definir, alterar ou remover a senha de admin."""
+        if self._settings_mgr.has_password():
+            if not self._require_password():
+                return
+
+        options = ["Definir nova senha", "Remover senha"]
+        if not self._settings_mgr.has_password():
+            options = ["Definir nova senha"]
+
+        choice, ok = QInputDialog.getItem(
+            self, "Senha de Admin", "Escolha uma opção:", options, 0, False
+        )
+        if not ok:
+            return
+
+        if choice == "Remover senha":
+            self._settings_mgr.remove_password()
+            self._admin_authenticated = False
+            self._update_settings_lock()
+            self._log.info("Senha de admin removida")
+            QMessageBox.information(self, "Senha", "Senha removida com sucesso.")
+            return
+
+        pw1, ok = QInputDialog.getText(
+            self, "Nova Senha", "Digite a nova senha:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok or not pw1:
+            return
+        pw2, ok = QInputDialog.getText(
+            self, "Confirmar Senha", "Confirme a nova senha:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return
+        if pw1 != pw2:
+            QMessageBox.warning(self, "Erro", "As senhas não coincidem.")
+            return
+
+        self._settings_mgr.set_password(pw1)
+        self._admin_authenticated = True
+        self._update_settings_lock()
+        self._log.info("Senha de admin definida/alterada")
+        QMessageBox.information(self, "Senha", "Senha definida com sucesso.")
 
     # ------------------------------------------------------------------ #
     #  Estado
@@ -386,7 +506,6 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_peak_detected(self) -> None:
-        """Pico de voz alta detectado -> solicita lembrete."""
         if self._state == AppState.BLOCK_ACTIVE:
             return
         if self._cooldown.in_cooldown and not self._alert.allow_reminders_during_cooldown:
@@ -395,7 +514,6 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_block_triggered(self) -> None:
-        """Tempo acumulado atingiu limiar -> aciona bloqueio."""
         if self._cooldown.in_cooldown:
             return
         if self._alert.is_block_active:
@@ -427,7 +545,6 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_block_finished(self) -> None:
-        # Zera acumulador e inicia cooldown
         self._detector.reset()
         self._cooldown.start_cooldown()
         self._detector.set_enabled(True)
@@ -443,9 +560,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     @Slot()
+    def _auto_start(self) -> None:
+        """Inicia monitoramento automaticamente."""
+        if self._state == AppState.STOPPED:
+            self._toggle_monitoring()
+
+    @Slot()
     def _toggle_monitoring(self) -> None:
         if self._state != AppState.STOPPED and self._state != AppState.PAUSED:
-            # Parar
+            if not self._require_password():
+                return
             self._audio.stop()
             self._detector.stop()
             self._set_state(AppState.STOPPED)
@@ -457,7 +581,6 @@ class MainWindow(QMainWindow):
             self._acc_bar.setValue(0)
             self._log.info("Monitoramento parado")
         else:
-            # Iniciar
             self._audio.start()
             self._detector.start()
             self._set_state(AppState.MONITORING)
@@ -468,6 +591,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _toggle_pause(self) -> None:
+        if not self._require_password():
+            return
         if self._paused:
             self._detector.set_enabled(True)
             self._set_state(AppState.MONITORING)
@@ -564,6 +689,16 @@ class MainWindow(QMainWindow):
         self._alert.allow_reminders_during_cooldown = enabled
         self._settings_mgr.save()
 
+    @Slot(int)
+    def _on_start_min_changed(self, state: int) -> None:
+        self._s.start_minimized = state == Qt.CheckState.Checked.value
+        self._settings_mgr.save()
+
+    @Slot(int)
+    def _on_auto_start_changed(self, state: int) -> None:
+        self._s.auto_start_monitoring = state == Qt.CheckState.Checked.value
+        self._settings_mgr.save()
+
     # ------------------------------------------------------------------ #
     #  Painel de Debug (atualizado a cada 100ms)
     # ------------------------------------------------------------------ #
@@ -603,7 +738,6 @@ class MainWindow(QMainWindow):
         d["trigger_count"].setText(str(self._detector.trigger_count))
         d["last_trigger"].setText(self._detector.last_trigger_time or "—")
 
-        # Estado
         if self._cooldown.in_cooldown and self._state not in (
             AppState.BLOCK_ACTIVE, AppState.REMINDER_ACTIVE
         ):
@@ -621,23 +755,35 @@ class MainWindow(QMainWindow):
         )
 
     # ------------------------------------------------------------------ #
-    #  Bandeja
+    #  Bandeja (discreto)
     # ------------------------------------------------------------------ #
+
+    def _tray_show_window(self) -> None:
+        """Mostra a janela — requer senha se protegida."""
+        if not self._require_password():
+            return
+        self.show()
+        self.activateWindow()
+
+    def _tray_quit(self) -> None:
+        """Sair da aplicação — requer senha se protegida."""
+        if not self._require_password():
+            return
+        self._audio.stop()
+        self._detector.stop()
+        QApplication.quit()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.show()
-            self.activateWindow()
+            self._tray_show_window()
+
+    def should_start_minimized(self) -> bool:
+        """Retorna se a janela deve iniciar minimizada na tray."""
+        return self._s.start_minimized
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._tray.isVisible():
             self.hide()
-            self._tray.showMessage(
-                "Loud Voice Cooldown",
-                "Minimizado na bandeja do sistema.",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000,
-            )
             event.ignore()
         else:
             self._audio.stop()
