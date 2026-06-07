@@ -1,46 +1,28 @@
 """
-OverlayWindow - Janela fullscreen always-on-top que bloqueia a tela.
+OverlayWindow - Janela fullscreen always-on-top de bloqueio visual.
 
-Exibe mensagem calma com contador regressivo e libera automaticamente
-ao final do tempo configurado.
+Exibe mensagem clara com contador regressivo.
+Fecha automaticamente ao final do tempo configurado.
+Não bloqueia teclado e mouse.
 """
 
 from PySide6.QtWidgets import QWidget, QLabel, QVBoxLayout
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QFont, QGuiApplication
-from typing import Optional
-
-from .alert_manager import AlertLevel
+from PySide6.QtGui import QFont
 
 
 class OverlayWindow(QWidget):
-    """Janela de overlay/bloqueio fullscreen."""
+    """Janela de bloqueio fullscreen com contador regressivo."""
 
-    # Emitido quando o overlay é fechado (tempo esgotado)
+    # Emitido quando o overlay fecha (tempo esgotado)
     overlay_closed = Signal()
 
-    # Mensagens por nível
-    MESSAGES = {
-        AlertLevel.SMALL_WARNING: "⚠️ Atenção! Você está falando um pouco alto.",
-        AlertLevel.OVERLAY: "🔊 Você está falando muito alto!\nFale mais baixo para continuar jogando.",
-        AlertLevel.FULL_BLOCK: "🛑 Você está falando muito alto.\nFale mais baixo para continuar jogando.",
-    }
-
-    # Cores de fundo por nível (RGBA)
-    BACKGROUNDS = {
-        AlertLevel.SMALL_WARNING: "rgba(255, 165, 0, 200)",   # Laranja semi
-        AlertLevel.OVERLAY: "rgba(180, 0, 0, 220)",            # Vermelho semi
-        AlertLevel.FULL_BLOCK: "rgba(0, 0, 0, 245)",           # Preto quase opaco
-    }
-
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._remaining = 0
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
-        self._level = AlertLevel.FULL_BLOCK
-
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -51,73 +33,56 @@ class OverlayWindow(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setStyleSheet("background-color: rgba(0, 0, 0, 240);")
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # Ícone / título
+        title = QLabel("Volume alto acumulado.")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setFont(QFont("Segoe UI", 32, QFont.Weight.Bold))
+        title.setStyleSheet("color: #ff4444; padding: 20px;")
+        layout.addWidget(title)
+
         # Mensagem principal
-        self._message_label = QLabel()
+        self._message_label = QLabel(
+            "Fale mais baixo para continuar jogando."
+        )
         self._message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._message_label.setWordWrap(True)
-        font = QFont("Segoe UI", 28, QFont.Weight.Bold)
-        self._message_label.setFont(font)
-        self._message_label.setStyleSheet("color: white; padding: 40px;")
+        self._message_label.setFont(QFont("Segoe UI", 22))
+        self._message_label.setStyleSheet("color: white; padding: 10px;")
         layout.addWidget(self._message_label)
 
         # Contador regressivo
         self._countdown_label = QLabel()
         self._countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        countdown_font = QFont("Segoe UI", 72, QFont.Weight.Bold)
-        self._countdown_label.setFont(countdown_font)
+        self._countdown_label.setFont(QFont("Segoe UI", 72, QFont.Weight.Bold))
         self._countdown_label.setStyleSheet("color: white;")
         layout.addWidget(self._countdown_label)
 
         # Instrução
-        self._instruction_label = QLabel("Respire fundo e fale mais baixo...")
-        self._instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        instruction_font = QFont("Segoe UI", 16)
-        self._instruction_label.setFont(instruction_font)
-        self._instruction_label.setStyleSheet("color: rgba(255, 255, 255, 180);")
-        layout.addWidget(self._instruction_label)
+        self._releasing_label = QLabel()
+        self._releasing_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._releasing_label.setFont(QFont("Segoe UI", 16))
+        self._releasing_label.setStyleSheet("color: rgba(255, 255, 255, 160);")
+        layout.addWidget(self._releasing_label)
 
-    def show_alert(self, level: int, duration: float) -> None:
-        """Exibe o overlay com o nível e duração especificados."""
-        self._level = level
+    def show_block(self, duration: float) -> None:
+        """Exibe o bloqueio fullscreen com duração em segundos."""
         self._remaining = int(duration)
-
-        # Configura visual baseado no nível
-        message = self.MESSAGES.get(level, self.MESSAGES[AlertLevel.FULL_BLOCK])
-        background = self.BACKGROUNDS.get(level, self.BACKGROUNDS[AlertLevel.FULL_BLOCK])
-
-        self._message_label.setText(message)
         self._countdown_label.setText(str(self._remaining))
-        self.setStyleSheet(f"background-color: {background};")
+        self._releasing_label.setText(
+            f"Liberando em {self._remaining} segundos."
+        )
 
-        # Para nível 1, mostra janela menor (não fullscreen)
-        if level == AlertLevel.SMALL_WARNING:
-            self.resize(600, 300)
-            self.setWindowFlags(
-                Qt.WindowType.FramelessWindowHint
-                | Qt.WindowType.WindowStaysOnTopHint
-                | Qt.WindowType.Tool
-            )
-            # Centraliza na tela
-            screen = QGuiApplication.primaryScreen()
-            if screen:
-                geometry = screen.geometry()
-                x = (geometry.width() - 600) // 2
-                y = (geometry.height() - 300) // 2
-                self.move(x, y)
-            self.show()
-        else:
-            # Fullscreen para níveis 2 e 3
-            self.setWindowFlags(
-                Qt.WindowType.FramelessWindowHint
-                | Qt.WindowType.WindowStaysOnTopHint
-                | Qt.WindowType.Tool
-            )
-            self.showFullScreen()
-
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.showFullScreen()
         self._timer.start()
 
     @Slot()
@@ -130,6 +95,9 @@ class OverlayWindow(QWidget):
             self.overlay_closed.emit()
         else:
             self._countdown_label.setText(str(self._remaining))
+            self._releasing_label.setText(
+                f"Liberando em {self._remaining} segundo{'s' if self._remaining > 1 else ''}."
+            )
 
     def force_close(self) -> None:
         """Fecha o overlay imediatamente."""

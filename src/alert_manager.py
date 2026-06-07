@@ -1,52 +1,50 @@
 """
-AlertManager - Coordena os níveis de alerta progressivo.
+AlertManager - Coordena lembretes visuais e bloqueios.
 
-Níveis:
-  1. Aviso pequeno (notificação na bandeja)
-  2. Overlay semitransparente com mensagem
-  3. Tela escura fullscreen bloqueante
-
-Após cada ciclo de alertas, o nível volta para 1.
-Se progressive_alerts estiver desativado, vai direto para nível 3.
+Gerencia cooldown entre lembretes (3s padrão) e cooldown após bloqueio (45s).
+O acúmulo continua durante cooldown de lembretes.
 """
 
+import time
 from PySide6.QtCore import QObject, Signal, Slot
-from typing import Optional
 
-
-class AlertLevel:
-    SMALL_WARNING = 1
-    OVERLAY = 2
-    FULL_BLOCK = 3
+from .logger import get_logger
 
 
 class AlertManager(QObject):
-    """Gerencia os níveis progressivos de alerta."""
+    """Gerencia lembretes e bloqueios com cooldowns independentes."""
 
-    # Emitido com o nível do alerta a ser exibido
-    alert_triggered = Signal(int)
-    # Emitido quando o alerta (bloqueio) termina
-    alert_finished = Signal()
+    # Emitido para exibir lembrete visual não-bloqueante
+    show_reminder = Signal()
+    # Emitido para acionar bloqueio fullscreen
+    show_block = Signal()
+    # Emitido quando o bloqueio termina
+    block_finished = Signal()
 
     def __init__(
         self,
-        progressive: bool = True,
+        reminder_cooldown: float = 3.0,
         block_duration: float = 8.0,
-        parent: Optional[QObject] = None,
+        allow_reminders_during_cooldown: bool = True,
+        parent: QObject | None = None,
     ):
         super().__init__(parent)
-        self._progressive = progressive
+        self._reminder_cooldown = reminder_cooldown
         self._block_duration = block_duration
-        self._current_level = AlertLevel.SMALL_WARNING
-        self._active = False
+        self._allow_reminders_during_cooldown = allow_reminders_during_cooldown
+        self._last_reminder_time: float = 0.0
+        self._block_active = False
+        self._log = get_logger()
+
+    # --- Propriedades ---
 
     @property
-    def progressive(self) -> bool:
-        return self._progressive
+    def reminder_cooldown(self) -> float:
+        return self._reminder_cooldown
 
-    @progressive.setter
-    def progressive(self, value: bool) -> None:
-        self._progressive = value
+    @reminder_cooldown.setter
+    def reminder_cooldown(self, value: float) -> None:
+        self._reminder_cooldown = max(0.5, value)
 
     @property
     def block_duration(self) -> float:
@@ -57,43 +55,68 @@ class AlertManager(QObject):
         self._block_duration = max(1.0, value)
 
     @property
-    def current_level(self) -> int:
-        return self._current_level
+    def allow_reminders_during_cooldown(self) -> bool:
+        return self._allow_reminders_during_cooldown
+
+    @allow_reminders_during_cooldown.setter
+    def allow_reminders_during_cooldown(self, value: bool) -> None:
+        self._allow_reminders_during_cooldown = value
 
     @property
-    def is_active(self) -> bool:
-        return self._active
+    def is_block_active(self) -> bool:
+        return self._block_active
+
+    # --- Lembrete ---
+
+    def can_show_reminder(self) -> bool:
+        """Verifica se o cooldown entre lembretes permite exibir."""
+        elapsed = time.time() - self._last_reminder_time
+        return elapsed >= self._reminder_cooldown
 
     @Slot()
-    def trigger_alert(self) -> None:
-        """Dispara o próximo nível de alerta."""
-        if self._active:
+    def request_reminder(self) -> None:
+        """Tenta exibir um lembrete (respeita cooldown)."""
+        if self._block_active:
             return
-
-        self._active = True
-        if self._progressive:
-            level = self._current_level
-            # Avança para o próximo nível na próxima vez
-            if self._current_level < AlertLevel.FULL_BLOCK:
-                self._current_level += 1
-            else:
-                self._current_level = AlertLevel.SMALL_WARNING
-        else:
-            level = AlertLevel.FULL_BLOCK
-
-        self.alert_triggered.emit(level)
+        if not self.can_show_reminder():
+            return
+        self._last_reminder_time = time.time()
+        self._log.info("Lembrete exibido")
+        self.show_reminder.emit()
 
     @Slot()
-    def finish_alert(self) -> None:
-        """Marca o alerta atual como finalizado."""
-        self._active = False
-        self.alert_finished.emit()
+    def force_reminder(self) -> None:
+        """Exibe lembrete imediatamente (botão de teste)."""
+        self._last_reminder_time = time.time()
+        self._log.info("Lembrete exibido (teste)")
+        self.show_reminder.emit()
 
-    def reset_level(self) -> None:
-        """Reseta o nível de alerta para o inicial."""
-        self._current_level = AlertLevel.SMALL_WARNING
+    # --- Bloqueio ---
+
+    @Slot()
+    def trigger_block(self) -> None:
+        """Aciona o bloqueio visual fullscreen."""
+        if self._block_active:
+            return
+        self._block_active = True
+        self._log.info("Bloqueio acionado (duração: %.1fs)", self._block_duration)
+        self.show_block.emit()
+
+    @Slot()
+    def finish_block(self) -> None:
+        """Marca o bloqueio como finalizado."""
+        self._block_active = False
+        self._log.info("Bloqueio finalizado")
+        self.block_finished.emit()
+
+    @Slot()
+    def force_block(self) -> None:
+        """Aciona bloqueio imediatamente (botão de teste)."""
+        self._block_active = True
+        self._log.info("Bloqueio acionado (teste)")
+        self.show_block.emit()
 
     def reset(self) -> None:
-        """Reseta todo o estado."""
-        self._active = False
-        self._current_level = AlertLevel.SMALL_WARNING
+        """Reseta estado."""
+        self._block_active = False
+        self._last_reminder_time = 0.0
