@@ -29,7 +29,7 @@ class VolumeDetector(QObject):
         self,
         threshold: int = 40,
         analysis_interval_ms: int = 100,
-        accumulation_window: float = 60.0,
+        accumulation_window: float = 10.0,
         block_accumulation: float = 5.0,
         parent: QObject | None = None,
     ):

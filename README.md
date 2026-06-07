@@ -7,7 +7,7 @@ Aplicação para Windows 11 que monitora o volume do microfone em tempo real e a
 - **Privacidade total**: Não grava áudio, não transcreve fala, não envia nada para a internet
 - **Monitoramento em tempo real**: Volume do microfone em escala 0-100 com análise a cada 100ms
 - **Detecção de picos curtos**: Detecta voz alta mesmo em picos menores que 1 segundo
-- **Acúmulo com janela móvel**: Acumula tempo acima do limite em janela de 60 segundos
+- **Acúmulo com janela móvel**: Acumula tempo acima do limite em janela configurável (padrão 10s)
 - **Lembrete visual**: Toast não-bloqueante "Fale mais baixo" com cooldown de 3s entre lembretes
 - **Bloqueio fullscreen**: Tela escura always-on-top com contador regressivo ao atingir 5s acumulados
 - **Cooldown pós-bloqueio**: 45 segundos após bloqueio para evitar punição repetida
@@ -73,7 +73,7 @@ A cada 100ms a aplicação lê o volume do microfone e compara com o limite:
 Se volume_atual > limite_de_volume_para_alerta → registra como voz alta
 ```
 
-O tempo acima do limite é acumulado numa janela móvel de 60s. Quando o acumulado atinge 5s, o bloqueio visual é acionado. Picos curtos (< 1s) também geram lembrete visual imediato.
+O tempo acima do limite é acumulado numa janela móvel (padrão 10s, customizável). Quando o acumulado atinge 5s, o bloqueio visual é acionado. Picos curtos (< 1s) também geram lembrete visual imediato.
 
 ## Configurações
 
@@ -81,7 +81,7 @@ O tempo acima do limite é acumulado numa janela móvel de 60s. Quando o acumula
 |-----------|--------|-----------|
 | Limite de volume para alerta | 40 | Escala 0-100 (0=qualquer som, 100=só muito alto) |
 | Intervalo de análise | 100ms | Frequência de leitura do volume |
-| Janela de acúmulo | 60s | Eventos mais antigos são descartados |
+| Janela de acúmulo | 10s | Eventos mais antigos são descartados (customizável) |
 | Tempo acumulado para bloqueio | 5s | Total acumulado que dispara bloqueio |
 | Duração do lembrete | 1.5s | Tempo que o toast fica visível |
 | Cooldown entre lembretes | 3s | Mínimo entre lembretes consecutivos |

@@ -22,7 +22,7 @@ class AppSettings:
     # Intervalo de análise em milissegundos
     analysis_interval_ms: int = 100
     # Janela de acúmulo em segundos
-    accumulation_window: float = 60.0
+    accumulation_window: float = 10.0
     # Tempo acumulado acima do limite para acionar bloqueio (segundos)
     block_accumulation: float = 5.0
     # Duração do lembrete visual (segundos)
